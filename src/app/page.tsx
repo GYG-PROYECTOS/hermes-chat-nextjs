@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, DragEvent } from 'react';
 
 interface Message {
   id: string;
@@ -25,6 +25,11 @@ interface EditorState {
   originalName: string;
 }
 
+interface MoveState {
+  dragging: string | null;
+  dragOver: string | null;
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -44,6 +49,8 @@ export default function Home() {
   });
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [move, setMove] = useState<MoveState>({ dragging: null, dragOver: null });
+  const [currentPath, setCurrentPath] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -103,11 +110,12 @@ export default function Home() {
     }
   };
 
-  const loadIndex = async () => {
+  const loadIndex = async (path = '') => {
     setShowIndex(true);
     setIndexLoading(true);
+    setCurrentPath(path);
     try {
-      const res = await fetch('/api/index');
+      const res = await fetch(`/api/index${path ? '?path=' + encodeURIComponent(path) : ''}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setWikiItems(data.items || []);
@@ -118,12 +126,14 @@ export default function Home() {
     }
   };
 
-  const openCreateFile = () => {
-    setEditor({ open: true, mode: 'create', type: 'file', path: '', content: '# Nuevo archivo\n\n', originalName: '' });
+  const openCreateFile = (inFolder = '') => {
+    const folderPrefix = inFolder ? inFolder + '/' : '';
+    setEditor({ open: true, mode: 'create', type: 'file', path: folderPrefix, content: '# ', originalName: '' });
   };
 
-  const openCreateFolder = () => {
-    setEditor({ open: true, mode: 'create', type: 'folder', path: '', content: '', originalName: '' });
+  const openCreateFolder = (inFolder = '') => {
+    const folderPrefix = inFolder ? inFolder + '/' : '';
+    setEditor({ open: true, mode: 'create', type: 'folder', path: folderPrefix, content: '', originalName: '' });
   };
 
   const openEditFile = async (item: WikiItem) => {
@@ -148,12 +158,12 @@ export default function Home() {
       } else {
         await fetch(`/api/wiki/file?path=${editor.path}`, {
           method: 'PUT',
-          headers: { 'Content-Type: 'application/json' },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ content: editor.content }),
         });
       }
       setEditor({ ...editor, open: false });
-      loadIndex();
+      loadIndex(currentPath);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -164,17 +174,68 @@ export default function Home() {
   const confirmDelete = async () => {
     if (!deleteConfirm) return;
     try {
-      const isFolder = deleteConfirm.includes('/') === false && !deleteConfirm.endsWith('.md');
+      const isFolder = !deleteConfirm.endsWith('.md') && deleteConfirm.includes('/') === false;
       if (isFolder) {
         await fetch(`/api/wiki/folder?name=${deleteConfirm}`, { method: 'DELETE' });
       } else {
         await fetch(`/api/wiki/file?path=${deleteConfirm}`, { method: 'DELETE' });
       }
       setDeleteConfirm(null);
-      loadIndex();
+      loadIndex(currentPath);
     } catch (err: any) {
       setError(err.message);
     }
+  };
+
+  const handleDragStart = (e: DragEvent, itemName: string) => {
+    setMove({ ...move, dragging: itemName });
+    e.dataTransfer.setData('text/plain', itemName);
+  };
+
+  const handleDragOver = (e: DragEvent, folderName: string) => {
+    e.preventDefault();
+    setMove({ ...move, dragOver: folderName });
+  };
+
+  const handleDragLeave = () => {
+    setMove({ ...move, dragOver: null });
+  };
+
+  const handleDrop = async (e: DragEvent, targetFolder: string) => {
+    e.preventDefault();
+    const fileName = e.dataTransfer.getData('text/plain');
+    if (!fileName || fileName === targetFolder) {
+      setMove({ dragging: null, dragOver: null });
+      return;
+    }
+    try {
+      const res = await fetch(`/api/wiki/file?path=${fileName}`, { method: 'GET' });
+      const data = await res.json();
+      const destPath = targetFolder + '/' + fileName.split('/').pop();
+      await fetch(`/api/wiki/file?path=${destPath}`, {
+        method: 'PUT',
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: data.content }),
+      });
+      await fetch(`/api/wiki/file?path=${fileName}`, { method: 'DELETE' });
+      loadIndex(currentPath);
+    } catch (err: any) {
+      setError(err.message);
+    }
+    setMove({ dragging: null, dragOver: null });
+  };
+
+  const openFolder = (folderName: string) => {
+    setCurrentPath(folderName);
+    loadIndex(folderName);
+  };
+
+  const goUp = () => {
+    const parts = currentPath.split('/');
+    parts.pop();
+    const parent = parts.join('/');
+    setCurrentPath(parent);
+    loadIndex(parent);
   };
 
   const getFileName = (item: WikiItem) => {
@@ -195,8 +256,8 @@ export default function Home() {
       <header className="chat-header">
         <h1>🤖 Hermes Wiki Chat</h1>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <button className="header-btn" onClick={loadIndex} title="Ver índice">📚</button>
-          <button className="header-btn" onClick={() => setShowIndex(true)} title="Gestionar wiki">⚙️</button>
+          <button className="header-btn" onClick={() => { setShowIndex(true); setIndexLoading(true); fetch('/api/index').then(r=>r.json()).then(d=>{setWikiItems(d.items||[]);setIndexLoading(false);setCurrentPath('');}) }} title="Ver índice">📚</button>
+          <button className="header-btn" onClick={() => loadIndex()} title="Gestionar wiki">⚙️</button>
           <span className="status">● Conectado</span>
         </div>
       </header>
@@ -242,31 +303,48 @@ export default function Home() {
         <div className="index-overlay" onClick={() => setShowIndex(false)}>
           <div className="index-modal" onClick={(e) => e.stopPropagation()}>
             <div className="index-header">
-              <h2>📂 Gestionar Wiki</h2>
+              <h2>📂 {currentPath ? currentPath : 'Raíz'}</h2>
               <button className="index-close" onClick={() => setShowIndex(false)}>✕</button>
             </div>
             <div className="index-toolbar">
-              <button className="toolbar-btn" onClick={openCreateFile}>+ Archivo</button>
-              <button className="toolbar-btn" onClick={openCreateFolder}>+ Carpeta</button>
+              {currentPath && <button className="toolbar-btn" onClick={goUp}>⬆️ Volver</button>}
+              <button className="toolbar-btn" onClick={() => openCreateFile(currentPath)}>+ Archivo</button>
+              <button className="toolbar-btn" onClick={() => openCreateFolder(currentPath)}>+ Carpeta</button>
             </div>
             <div className="index-body">
               {indexLoading ? (
                 <div className="index-loading">Cargando...</div>
               ) : wikiItems.length === 0 ? (
-                <div className="index-empty">Vacío. Creá tu primer archivo o carpeta.</div>
+                <div className="index-empty">Vacío. Arrastrá archivos aquí o creá nuevos.</div>
               ) : (
                 <ul className="index-list">
                   {wikiItems.map((item) => (
-                    <li key={item.name} className="index-item">
-                      <span className="index-icon">{isFolder(item) ? '📁' : '📄'}</span>
+                    <li
+                      key={item.name}
+                      className={`index-item ${move.dragOver === item.name ? 'drag-over' : ''} ${move.dragging === item.name ? 'dragging' : ''}`}
+                      draggable={item.type === 'file'}
+                      onDragStart={(e) => handleDragStart(e, item.name)}
+                      onDragOver={(e) => isFolder(item) && handleDragOver(e, item.name)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => isFolder(item) && handleDrop(e, item.name)}
+                    >
+                      <span className="index-icon" onClick={() => isFolder(item) && openFolder(item.name)} style={{ cursor: isFolder(item) ? 'pointer' : 'default' }}>
+                        {isFolder(item) ? '📁' : '📄'}
+                      </span>
                       <span className="index-title" onClick={() => !isFolder(item) && openEditFile(item)} style={{ cursor: isFolder(item) ? 'default' : 'pointer' }}>
                         {item.title}
                       </span>
+                      {move.dragging && !isFolder(item) && move.dragging !== item.name && (
+                        <span className="move-hint">Arrastrá a 📁</span>
+                      )}
                       <button className="item-delete" onClick={() => setDeleteConfirm(item.name)} title="Eliminar">🗑️</button>
                     </li>
                   ))}
                 </ul>
               )}
+            </div>
+            <div className="index-footer">
+              <small style={{ color: '#666' }}>📁 Arrastrá archivos a carpetas para moverlos</small>
             </div>
           </div>
         </div>
@@ -284,8 +362,8 @@ export default function Home() {
                 <input
                   className="editor-input"
                   placeholder="nombre-de-la-carpeta"
-                  value={editor.path}
-                  onChange={(e) => setEditor({ ...editor, path: e.target.value })}
+                  value={editor.path.split('/').pop() || ''}
+                  onChange={(e) => setEditor({ ...editor, path: (currentPath ? currentPath + '/' : '') + e.target.value })}
                   autoFocus
                 />
               ) : (
@@ -293,22 +371,22 @@ export default function Home() {
                   <input
                     className="editor-input"
                     placeholder="nombre-del-archivo (sin .md)"
-                    value={getFileName({ ...editor, type: 'file', name: editor.path })}
-                    onChange={(e) => setEditor({ ...editor, path: e.target.value + '.md' })}
+                    value={editor.path.split('/').pop()?.replace('.md', '') || ''}
+                    onChange={(e) => setEditor({ ...editor, path: (currentPath ? currentPath + '/' : '') + e.target.value + '.md' })}
                     autoFocus
                   />
                   <textarea
                     className="editor-textarea"
                     value={editor.content}
                     onChange={(e) => setEditor({ ...editor, content: e.target.value })}
-                    placeholder="# Título&#10;&#10;Contenido del archivo..."
+                    placeholder="# Título&#10;&#10;Contenido..."
                   />
                 </>
               )}
             </div>
             <div className="editor-footer">
               <button className="toolbar-btn cancel" onClick={() => setEditor({ ...editor, open: false })}>Cancelar</button>
-              <button className="toolbar-btn save" onClick={saveEditor} disabled={saving || !editor.path}>
+              <button className="toolbar-btn save" onClick={saveEditor} disabled={saving || !editor.path.split('/').pop()}>
                 {saving ? 'Guardando...' : '💾 Guardar'}
               </button>
             </div>
@@ -600,7 +678,16 @@ export default function Home() {
           background: #1a1a2e;
           border-radius: 8px;
           border: 1px solid #0f3460;
+          transition: all 0.15s;
         }
+        .index-item.drag-over {
+          border-color: #e94560;
+          background: rgba(233, 69, 96, 0.15);
+        }
+        .index-item.dragging {
+          opacity: 0.5;
+        }
+        .index-item:not(.dragging) { cursor: grab; }
         .index-icon { font-size: 16px; }
         .index-title {
           flex: 1;
@@ -608,6 +695,13 @@ export default function Home() {
           color: #e0e0e0;
         }
         .index-title:hover { color: #e94560; }
+        .move-hint {
+          font-size: 10px;
+          color: #e94560;
+          opacity: 0;
+          transition: opacity 0.15s;
+        }
+        .index-item:hover .move-hint { opacity: 1; }
         .item-delete {
           background: none;
           border: none;
@@ -617,6 +711,11 @@ export default function Home() {
           padding: 4px;
         }
         .item-delete:hover { opacity: 1; }
+        .index-footer {
+          padding: 10px 20px;
+          border-top: 1px solid #0f3460;
+          text-align: center;
+        }
         .editor-modal {
           background: #16213e;
           border: 1px solid #0f3460;

@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 
@@ -11,23 +11,36 @@ interface WikiEntry {
   type: 'file' | 'folder';
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const basePath = searchParams.get('path') || '';
+  const targetPath = path.join(WIKI_PATH, basePath);
+
+  if (!targetPath.startsWith(WIKI_PATH)) {
+    return NextResponse.json({ error: 'Path fuera de wiki' }, { status: 403 });
+  }
+
   try {
-    const entries = fs.readdirSync(WIKI_PATH, { withFileTypes: true });
+    if (!fs.existsSync(targetPath)) {
+      return NextResponse.json({ error: 'Carpeta no existe' }, { status: 404 });
+    }
+
+    const entries = fs.readdirSync(targetPath, { withFileTypes: true });
     const items: WikiEntry[] = [];
 
     for (const entry of entries) {
+      const fullPath = path.join(basePath, entry.name);
       if (entry.isDirectory() && !entry.name.startsWith('.')) {
         items.push({
-          name: entry.name,
-          slug: entry.name,
+          name: fullPath,
+          slug: fullPath,
           title: entry.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
           type: 'folder',
         });
       } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'index.md') {
         items.push({
-          name: entry.name,
-          slug: entry.name.replace('.md', ''),
+          name: fullPath,
+          slug: fullPath.replace('.md', ''),
           title: entry.name.replace('.md', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
           type: 'file',
         });
@@ -40,11 +53,12 @@ export async function GET() {
     });
 
     return NextResponse.json({
+      path: basePath,
       total: items.length,
       items,
     });
   } catch (err: any) {
     console.error('[/api/index]', err);
-    return NextResponse.json({ error: err.message, total: 0, items: [] }, { status: 500 });
+    return NextResponse.json({ error: err.message, path: basePath, total: 0, items: [] }, { status: 500 });
   }
 }
