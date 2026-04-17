@@ -125,7 +125,7 @@ function buildContext(files: WikiFile[], maxTokens = 60000): string {
   for (const file of files) {
     const estimatedTokens = file.content.length / 4;
     if (context.length / 4 + estimatedTokens > maxTokens) break;
-    context += `\n\n## ${file.title || file.slug}\n\n${file.content}`;
+    context += `\n\n## ${file.slug.replace(/-/g, ' ')}\n\n${file.content}`;
   }
 
   return context;
