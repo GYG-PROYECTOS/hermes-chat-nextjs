@@ -9,11 +9,20 @@ interface Message {
   sources?: { title: string; slug: string }[];
 }
 
-interface WikiPage {
+interface WikiItem {
+  name: string;
   slug: string;
   title: string;
-  file: string;
-  folder: string;
+  type: 'file' | 'folder';
+}
+
+interface EditorState {
+  open: boolean;
+  mode: 'create' | 'edit';
+  type: 'file' | 'folder';
+  path: string;
+  content: string;
+  originalName: string;
 }
 
 export default function Home() {
@@ -28,8 +37,13 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showIndex, setShowIndex] = useState(false);
-  const [indexPages, setIndexPages] = useState<WikiPage[]>([]);
+  const [wikiItems, setWikiItems] = useState<WikiItem[]>([]);
   const [indexLoading, setIndexLoading] = useState(false);
+  const [editor, setEditor] = useState<EditorState>({
+    open: false, mode: 'create', type: 'file', path: '', content: '', originalName: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -96,25 +110,95 @@ export default function Home() {
       const res = await fetch('/api/index');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setIndexPages(data.pages || []);
+      setWikiItems(data.items || []);
     } catch (err: any) {
-      setIndexPages([]);
+      setWikiItems([]);
     } finally {
       setIndexLoading(false);
     }
   };
 
+  const openCreateFile = () => {
+    setEditor({ open: true, mode: 'create', type: 'file', path: '', content: '# Nuevo archivo\n\n', originalName: '' });
+  };
+
+  const openCreateFolder = () => {
+    setEditor({ open: true, mode: 'create', type: 'folder', path: '', content: '', originalName: '' });
+  };
+
+  const openEditFile = async (item: WikiItem) => {
+    try {
+      const res = await fetch(`/api/wiki/file?path=${item.name}`);
+      const data = await res.json();
+      setEditor({ open: true, mode: 'edit', type: 'file', path: item.name, content: data.content || '', originalName: item.name });
+    } catch {
+      setError('No se pudo abrir el archivo');
+    }
+  };
+
+  const saveEditor = async () => {
+    setSaving(true);
+    try {
+      if (editor.type === 'folder') {
+        await fetch('/api/wiki/folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: editor.path }),
+        });
+      } else {
+        await fetch(`/api/wiki/file?path=${editor.path}`, {
+          method: 'PUT',
+          headers: { 'Content-Type: 'application/json' },
+          body: JSON.stringify({ content: editor.content }),
+        });
+      }
+      setEditor({ ...editor, open: false });
+      loadIndex();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirm) return;
+    try {
+      const isFolder = deleteConfirm.includes('/') === false && !deleteConfirm.endsWith('.md');
+      if (isFolder) {
+        await fetch(`/api/wiki/folder?name=${deleteConfirm}`, { method: 'DELETE' });
+      } else {
+        await fetch(`/api/wiki/file?path=${deleteConfirm}`, { method: 'DELETE' });
+      }
+      setDeleteConfirm(null);
+      loadIndex();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const getFileName = (item: WikiItem) => {
+    if (item.type === 'folder') return item.name;
+    return item.name.replace('.md', '');
+  };
+
+  const isFolder = (item: WikiItem) => item.type === 'folder';
+
   const suggestions = [
     { label: '¿Qué documentos hay?', q: '¿Qué documentos hay disponibles?' },
     { label: 'Resumen', q: 'Dame un resumen del documento' },
-    { label: 'Ver índice', action: 'index' },
+    { label: '📂 Gestionar wiki', action: 'manage' },
   ];
 
   return (
     <main className="chat-container">
       <header className="chat-header">
         <h1>🤖 Hermes Wiki Chat</h1>
-        <span className="status">● Conectado</span>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button className="header-btn" onClick={loadIndex} title="Ver índice">📚</button>
+          <button className="header-btn" onClick={() => setShowIndex(true)} title="Gestionar wiki">⚙️</button>
+          <span className="status">● Conectado</span>
+        </div>
       </header>
 
       <div className="messages">
@@ -124,9 +208,7 @@ export default function Home() {
             {msg.sources && msg.sources.length > 0 && (
               <div className="msg-sources">
                 📄 Fuentes: {msg.sources.map((s, i) => (
-                  <span key={i} className="source-link">
-                    {s.title}
-                  </span>
+                  <span key={i} className="source-link">{s.title}</span>
                 ))}
               </div>
             )}
@@ -148,7 +230,7 @@ export default function Home() {
             <button
               key={i}
               className="suggestion-btn"
-              onClick={() => s.action === 'index' ? loadIndex() : sendMessage(s.q)}
+              onClick={() => s.action === 'manage' ? loadIndex() : sendMessage(s.q)}
             >
               {s.label}
             </button>
@@ -160,23 +242,27 @@ export default function Home() {
         <div className="index-overlay" onClick={() => setShowIndex(false)}>
           <div className="index-modal" onClick={(e) => e.stopPropagation()}>
             <div className="index-header">
-              <h2>📚 Índice de Documentos</h2>
+              <h2>📂 Gestionar Wiki</h2>
               <button className="index-close" onClick={() => setShowIndex(false)}>✕</button>
+            </div>
+            <div className="index-toolbar">
+              <button className="toolbar-btn" onClick={openCreateFile}>+ Archivo</button>
+              <button className="toolbar-btn" onClick={openCreateFolder}>+ Carpeta</button>
             </div>
             <div className="index-body">
               {indexLoading ? (
                 <div className="index-loading">Cargando...</div>
-              ) : indexPages.length === 0 ? (
-                <div className="index-empty">No hay documentos</div>
+              ) : wikiItems.length === 0 ? (
+                <div className="index-empty">Vacío. Creá tu primer archivo o carpeta.</div>
               ) : (
                 <ul className="index-list">
-                  {indexPages.map((page) => (
-                    <li key={page.slug} className="index-item">
-                      <span className="index-icon">📄</span>
-                      <span className="index-title">{page.title}</span>
-                      {page.folder && page.folder !== 'root' && (
-                        <span className="index-folder">📁 {page.folder}</span>
-                      )}
+                  {wikiItems.map((item) => (
+                    <li key={item.name} className="index-item">
+                      <span className="index-icon">{isFolder(item) ? '📁' : '📄'}</span>
+                      <span className="index-title" onClick={() => !isFolder(item) && openEditFile(item)} style={{ cursor: isFolder(item) ? 'default' : 'pointer' }}>
+                        {item.title}
+                      </span>
+                      <button className="item-delete" onClick={() => setDeleteConfirm(item.name)} title="Eliminar">🗑️</button>
                     </li>
                   ))}
                 </ul>
@@ -186,7 +272,69 @@ export default function Home() {
         </div>
       )}
 
-      {error && <div className="error-bar">⚠️ {error}</div>}
+      {editor.open && (
+        <div className="index-overlay" onClick={() => setEditor({ ...editor, open: false })}>
+          <div className="editor-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="editor-header">
+              <h2>{editor.mode === 'create' ? (editor.type === 'folder' ? '📁 Nueva Carpeta' : '📄 Nuevo Archivo') : '✏️ Editar'}</h2>
+              <button className="index-close" onClick={() => setEditor({ ...editor, open: false })}>✕</button>
+            </div>
+            <div className="editor-body">
+              {editor.type === 'folder' ? (
+                <input
+                  className="editor-input"
+                  placeholder="nombre-de-la-carpeta"
+                  value={editor.path}
+                  onChange={(e) => setEditor({ ...editor, path: e.target.value })}
+                  autoFocus
+                />
+              ) : (
+                <>
+                  <input
+                    className="editor-input"
+                    placeholder="nombre-del-archivo (sin .md)"
+                    value={getFileName({ ...editor, type: 'file', name: editor.path })}
+                    onChange={(e) => setEditor({ ...editor, path: e.target.value + '.md' })}
+                    autoFocus
+                  />
+                  <textarea
+                    className="editor-textarea"
+                    value={editor.content}
+                    onChange={(e) => setEditor({ ...editor, content: e.target.value })}
+                    placeholder="# Título&#10;&#10;Contenido del archivo..."
+                  />
+                </>
+              )}
+            </div>
+            <div className="editor-footer">
+              <button className="toolbar-btn cancel" onClick={() => setEditor({ ...editor, open: false })}>Cancelar</button>
+              <button className="toolbar-btn save" onClick={saveEditor} disabled={saving || !editor.path}>
+                {saving ? 'Guardando...' : '💾 Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div className="index-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>⚠️ Confirmar eliminación</h3>
+            <p>¿Eliminar <strong>{deleteConfirm}</strong>?</p>
+            <div className="confirm-btns">
+              <button className="toolbar-btn cancel" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
+              <button className="toolbar-btn delete" onClick={confirmDelete}>🗑️ Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="error-bar">
+          ⚠️ {error}
+          <button className="error-close" onClick={() => setError('')}>✕</button>
+        </div>
+      )}
 
       <div className="input-area">
         <input
@@ -211,7 +359,6 @@ export default function Home() {
           color: #e0e0e0;
           font-family: 'Google Sans', Arial, sans-serif;
         }
-
         .chat-header {
           background: #16213e;
           padding: 12px 20px;
@@ -220,18 +367,27 @@ export default function Home() {
           align-items: center;
           justify-content: space-between;
         }
-
         .chat-header h1 {
           font-size: 16px;
           color: #e94560;
           margin: 0;
         }
-
+        .header-btn {
+          background: #0f3460;
+          border: none;
+          border-radius: 6px;
+          width: 32px;
+          height: 32px;
+          color: #e0e0e0;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .header-btn:hover { background: #e94560; }
         .status {
           font-size: 12px;
           color: #4ade80;
+          margin-left: 8px;
         }
-
         .messages {
           flex: 1;
           overflow-y: auto;
@@ -240,7 +396,6 @@ export default function Home() {
           flex-direction: column;
           gap: 12px;
         }
-
         .msg {
           max-width: 80%;
           padding: 10px 14px;
@@ -248,31 +403,21 @@ export default function Home() {
           font-size: 14px;
           line-height: 1.5;
         }
-
         .msg-user {
           align-self: flex-end;
           background: #0f3460;
           color: #fff;
         }
-
         .msg-bot {
           align-self: flex-start;
           background: #16213e;
           border: 1px solid #0f3460;
         }
-
         .msg-content {
           word-break: break-word;
         }
-
-        .msg-content :global(strong) {
-          color: #e94560;
-        }
-
-        .msg-content :global(a) {
-          color: #e94560;
-        }
-
+        .msg-content :global(strong) { color: #e94560; }
+        .msg-content :global(a) { color: #e94560; }
         .msg-content :global(pre) {
           background: #0a0a1a;
           padding: 8px;
@@ -280,7 +425,6 @@ export default function Home() {
           overflow-x: auto;
           font-size: 12px;
         }
-
         .msg-content :global(code) {
           background: #0a0a1a;
           padding: 2px 5px;
@@ -288,13 +432,11 @@ export default function Home() {
           font-family: 'Courier New', monospace;
           font-size: 13px;
         }
-
         .msg-sources {
           margin-top: 8px;
           font-size: 11px;
           color: #888;
         }
-
         .source-link {
           background: #0f3460;
           color: #e94560;
@@ -302,14 +444,12 @@ export default function Home() {
           border-radius: 10px;
           margin-right: 6px;
         }
-
         .suggestions {
           display: flex;
           gap: 8px;
           padding: 0 20px 12px;
           flex-wrap: wrap;
         }
-
         .suggestion-btn {
           background: #0f3460;
           border: 1px solid #e94560;
@@ -320,20 +460,27 @@ export default function Home() {
           cursor: pointer;
           transition: all 0.15s;
         }
-
         .suggestion-btn:hover {
           background: #e94560;
           color: #fff;
         }
-
         .error-bar {
           padding: 8px 20px;
           background: rgba(231, 76, 60, 0.2);
           color: #e74c3c;
           font-size: 13px;
-          text-align: center;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
         }
-
+        .error-close {
+          background: none;
+          border: none;
+          color: #e74c3c;
+          cursor: pointer;
+          font-size: 14px;
+          padding: 0 4px;
+        }
         .input-area {
           background: #16213e;
           padding: 12px 20px;
@@ -342,7 +489,6 @@ export default function Home() {
           gap: 10px;
           align-items: center;
         }
-
         .input-area input {
           flex: 1;
           background: #1a1a2e;
@@ -353,15 +499,8 @@ export default function Home() {
           font-size: 14px;
           outline: none;
         }
-
-        .input-area input:focus {
-          border-color: #e94560;
-        }
-
-        .input-area input:disabled {
-          opacity: 0.5;
-        }
-
+        .input-area input:focus { border-color: #e94560; }
+        .input-area input:disabled { opacity: 0.5; }
         .input-area button {
           background: #e94560;
           border: none;
@@ -371,38 +510,19 @@ export default function Home() {
           color: #fff;
           font-size: 16px;
           cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
         }
-
-        .input-area button:disabled {
-          background: #555;
-          cursor: not-allowed;
-        }
-
-        .input-area button:not(:disabled):hover {
-          background: #c73e54;
-        }
-
-        .typing {
-          color: #e94560;
-          font-style: italic;
-        }
-
+        .input-area button:disabled { background: #555; cursor: not-allowed; }
+        .input-area button:not(:disabled):hover { background: #c73e54; }
+        .typing { color: #e94560; font-style: italic; }
         .index-overlay {
           position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
+          top: 0; left: 0; right: 0; bottom: 0;
           background: rgba(0, 0, 0, 0.7);
           display: flex;
           align-items: center;
           justify-content: center;
           z-index: 100;
         }
-
         .index-modal {
           background: #16213e;
           border: 1px solid #0f3460;
@@ -413,7 +533,6 @@ export default function Home() {
           display: flex;
           flex-direction: column;
         }
-
         .index-header {
           display: flex;
           justify-content: space-between;
@@ -421,13 +540,7 @@ export default function Home() {
           padding: 16px 20px;
           border-bottom: 1px solid #0f3460;
         }
-
-        .index-header h2 {
-          font-size: 16px;
-          color: #e94560;
-          margin: 0;
-        }
-
+        .index-header h2 { font-size: 16px; color: #e94560; margin: 0; }
         .index-close {
           background: none;
           border: none;
@@ -437,25 +550,40 @@ export default function Home() {
           padding: 4px 8px;
           border-radius: 4px;
         }
-
-        .index-close:hover {
-          background: #0f3460;
-          color: #fff;
+        .index-close:hover { background: #0f3460; color: #fff; }
+        .index-toolbar {
+          display: flex;
+          gap: 8px;
+          padding: 12px 20px;
+          border-bottom: 1px solid #0f3460;
         }
-
+        .toolbar-btn {
+          background: #0f3460;
+          border: 1px solid #e94560;
+          border-radius: 8px;
+          padding: 6px 14px;
+          font-size: 12px;
+          color: #e94560;
+          cursor: pointer;
+        }
+        .toolbar-btn:hover { background: #e94560; color: #fff; }
+        .toolbar-btn.save { background: #e94560; color: #fff; border-color: #e94560; }
+        .toolbar-btn.save:hover { background: #c73e54; }
+        .toolbar-btn.save:disabled { background: #555; border-color: #555; cursor: not-allowed; }
+        .toolbar-btn.cancel { border-color: #555; color: #888; }
+        .toolbar-btn.cancel:hover { background: #555; color: #fff; }
+        .toolbar-btn.delete { background: #c0392b; border-color: #c0392b; color: #fff; }
+        .toolbar-btn.delete:hover { background: #a93226; }
         .index-body {
           padding: 16px 20px;
           overflow-y: auto;
           flex: 1;
         }
-
-        .index-loading,
-        .index-empty {
+        .index-loading, .index-empty {
           text-align: center;
           color: #888;
           padding: 20px;
         }
-
         .index-list {
           list-style: none;
           padding: 0;
@@ -464,7 +592,6 @@ export default function Home() {
           flex-direction: column;
           gap: 8px;
         }
-
         .index-item {
           display: flex;
           align-items: center;
@@ -474,24 +601,92 @@ export default function Home() {
           border-radius: 8px;
           border: 1px solid #0f3460;
         }
-
-        .index-icon {
-          font-size: 16px;
-        }
-
+        .index-icon { font-size: 16px; }
         .index-title {
           flex: 1;
           font-size: 13px;
           color: #e0e0e0;
         }
-
-        .index-folder {
-          font-size: 11px;
-          color: #888;
-          background: #0f3460;
-          padding: 2px 8px;
-          border-radius: 10px;
+        .index-title:hover { color: #e94560; }
+        .item-delete {
+          background: none;
+          border: none;
+          cursor: pointer;
+          font-size: 14px;
+          opacity: 0.5;
+          padding: 4px;
         }
+        .item-delete:hover { opacity: 1; }
+        .editor-modal {
+          background: #16213e;
+          border: 1px solid #0f3460;
+          border-radius: 12px;
+          width: 90%;
+          max-width: 600px;
+          max-height: 85vh;
+          display: flex;
+          flex-direction: column;
+        }
+        .editor-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 16px 20px;
+          border-bottom: 1px solid #0f3460;
+        }
+        .editor-header h2 { font-size: 16px; color: #e94560; margin: 0; }
+        .editor-body {
+          padding: 16px 20px;
+          overflow-y: auto;
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .editor-input {
+          background: #1a1a2e;
+          border: 1px solid #0f3460;
+          border-radius: 8px;
+          padding: 10px 14px;
+          color: #fff;
+          font-size: 14px;
+          outline: none;
+          width: 100%;
+        }
+        .editor-input:focus { border-color: #e94560; }
+        .editor-textarea {
+          background: #1a1a2e;
+          border: 1px solid #0f3460;
+          border-radius: 8px;
+          padding: 10px 14px;
+          color: #fff;
+          font-size: 13px;
+          font-family: 'Courier New', monospace;
+          outline: none;
+          width: 100%;
+          min-height: 300px;
+          resize: vertical;
+          line-height: 1.5;
+        }
+        .editor-textarea:focus { border-color: #e94560; }
+        .editor-footer {
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
+          padding: 12px 20px;
+          border-top: 1px solid #0f3460;
+        }
+        .confirm-modal {
+          background: #16213e;
+          border: 1px solid #c0392b;
+          border-radius: 12px;
+          padding: 24px;
+          text-align: center;
+          max-width: 360px;
+        }
+        .confirm-modal h3 { color: #e74c3c; margin: 0 0 12px; }
+        .confirm-modal p { color: #e0e0e0; margin: 0 0 20px; }
+        .confirm-btns { display: flex; gap: 10px; justify-content: center; }
       `}</style>
     </main>
   );
