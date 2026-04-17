@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, DragEvent } from 'react';
+import { useState, useRef, useEffect, DragEvent, ChangeEvent } from 'react';
 
 interface Message {
   id: string;
@@ -30,8 +30,6 @@ interface MoveState {
   dragOver: string | null;
 }
 
-const API_BASE = '';
-
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -56,6 +54,9 @@ export default function Home() {
   const [selectedFolder, setSelectedFolder] = useState('');
   const [showIntegrate, setShowIntegrate] = useState(false);
   const [folderList, setFolderList] = useState<WikiItem[]>([]);
+  const [showFolderSelect, setShowFolderSelect] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -150,6 +151,7 @@ export default function Home() {
   const selectFolder = (folder: WikiItem) => {
     setSelectedFolder(folder.slug);
     setShowIndex(false);
+    setShowFolderSelect(false);
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       role: 'bot',
@@ -159,11 +161,17 @@ export default function Home() {
 
   const clearFolder = () => {
     setSelectedFolder('');
+    setShowFolderSelect(false);
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       role: 'bot',
       content: `🌐 <strong>Modo global:</strong> Buscando en todos los documentos.`,
     }]);
+  };
+
+  const openFolderSelect = () => {
+    setShowFolderSelect(true);
+    loadFolders();
   };
 
   const openCreateFile = (inFolder = '') => {
@@ -280,12 +288,43 @@ export default function Home() {
     loadIndex(parent);
   };
 
+  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Solo archivos PDF');
+      return;
+    }
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('folder', currentPath);
+
+    try {
+      const res = await fetch('/api/wiki/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setError('');
+      loadIndex(currentPath);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   const isFolder = (item: WikiItem) => item.type === 'folder';
 
   const suggestions = [
     { label: '¿Qué documentos hay?', q: '¿Qué documentos hay disponibles?' },
     { label: 'Resumen', q: 'Dame un resumen del documento' },
-    { label: '📂 Seleccionar cuaderno', action: 'manage' },
+    { label: '📂 Cambiar cuaderno', action: 'folder' },
   ];
 
   return (
@@ -301,8 +340,38 @@ export default function Home() {
 
       {selectedFolder && (
         <div className="folder-banner">
-          📂 Cuaderno activo: <strong>{selectedFolder}</strong>
-          <button className="folder-clear" onClick={clearFolder}>✕</button>
+          <span>📂 <strong>Cuaderno:</strong> {selectedFolder}</span>
+          <button className="folder-change" onClick={openFolderSelect}>🔄 Cambiar</button>
+          <button className="folder-clear" onClick={clearFolder}>✕ Modo global</button>
+        </div>
+      )}
+
+      {showFolderSelect && (
+        <div className="folder-select-overlay" onClick={() => setShowFolderSelect(false)}>
+          <div className="folder-select-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="folder-select-header">
+              <h3>📂 Seleccionar Cuaderno</h3>
+              <button onClick={() => setShowFolderSelect(false)}>✕</button>
+            </div>
+            <div className="folder-select-body">
+              {folderList.length === 0 ? (
+                <p className="folder-empty">No hay cuadernos. Creá uno primero.</p>
+              ) : (
+                <div className="folder-grid">
+                  {folderList.map(f => (
+                    <button key={f.name} className="folder-option" onClick={() => selectFolder(f)}>
+                      📁 {f.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="folder-select-footer">
+              <button className="toolbar-btn cancel" onClick={() => { setShowFolderSelect(false); clearFolder(); }}>
+                🌐 Usar todos los documentos
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -335,20 +404,11 @@ export default function Home() {
             <button
               key={i}
               className="suggestion-btn"
-              onClick={() => s.action === 'manage' ? (loadIndex(), setShowIndex(true)) : sendMessage(s.q)}
+              onClick={() => s.action === 'folder' ? openFolderSelect() : sendMessage(s.q)}
             >
               {s.label}
             </button>
           ))}
-          {folderList.length > 0 && (
-            <div className="folder-chips">
-              {folderList.map(f => (
-                <button key={f.name} className="folder-chip" onClick={() => selectFolder(f)}>
-                  📁 {f.title}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
@@ -359,28 +419,20 @@ export default function Home() {
               <h2>📂 {currentPath ? currentPath : 'Raíz'}</h2>
               <button className="index-close" onClick={() => setShowIndex(false)}>✕</button>
             </div>
-            {folderList.length > 0 && !currentPath && (
-              <div className="folder-select-area">
-                <p className="folder-select-label">📂 Seleccionar cuaderno para chatear:</p>
-                <div className="folder-chips-modal">
-                  {folderList.map(f => (
-                    <button key={f.name} className="folder-chip" onClick={() => selectFolder(f)}>
-                      📁 {f.title}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
             <div className="index-toolbar">
               {currentPath && <button className="toolbar-btn" onClick={goUp}>⬆️ Volver</button>}
               <button className="toolbar-btn" onClick={() => openCreateFile(currentPath)}>+ Archivo</button>
               <button className="toolbar-btn" onClick={() => openCreateFolder(currentPath)}>+ Carpeta</button>
+              <label className="toolbar-btn upload-btn">
+                {uploading ? '⏳ Subiendo...' : '📤 Subir PDF'}
+                <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileUpload} style={{ display: 'none' }} />
+              </label>
             </div>
             <div className="index-body">
               {indexLoading ? (
                 <div className="index-loading">Cargando...</div>
               ) : wikiItems.length === 0 ? (
-                <div className="index-empty">Vacío. Arrastrá archivos aquí o creá nuevos.</div>
+                <div className="index-empty">Vacío. Subí un PDF o creá archivos.</div>
               ) : (
                 <ul className="index-list">
                   {wikiItems.map((item) => (
@@ -406,7 +458,7 @@ export default function Home() {
               )}
             </div>
             <div className="index-footer">
-              <small style={{ color: '#666' }}>📁 Arrastrá archivos a carpetas para moverlos</small>
+              <small style={{ color: '#666' }}>📁 Arrastrá archivos a carpetas · 📤 PDF se sube directo</small>
             </div>
           </div>
         </div>
@@ -430,22 +482,20 @@ export default function Home() {
                       <div className="integrate-endpoints">
                         <div className="integrate-row">
                           <span className="integrate-label">Índice:</span>
-                          <code>{`${API_BASE}/api/public/index?path=${folder.slug}`}</code>
+                          <code>{`http://85.31.230.163:3001/api/public/index?path=${folder.slug}`}</code>
                         </div>
                         <div className="integrate-row">
                           <span className="integrate-label">Preguntar:</span>
-                          <code>{`POST ${API_BASE}/api/public/ask`}</code>
+                          <code>{`POST http://85.31.230.163:3001/api/public/ask`}</code>
+                        </div>
+                        <div className="integrate-row">
+                          <span className="integrate-label">Body ask:</span>
+                          <code>{`{"question":"...","folder":"${folder.slug}"}`}</code>
                         </div>
                         <div className="integrate-row">
                           <span className="integrate-label">Archivo:</span>
-                          <code>{`${API_BASE}/api/public/file?path=${folder.slug}/archivo.md`}</code>
+                          <code>{`http://85.31.230.163:3001/api/public/file?path=${folder.slug}/archivo.md`}</code>
                         </div>
-                      </div>
-                      <div className="integrate-example">
-                        <p>Ejemplo curl:</p>
-                        <code>{`curl -X POST ${API_BASE}/api/public/ask \\
-  -H "Content-Type: application/json" \\
-  -d '{"question":"tu pregunta","folder":"${folder.slug}"}'`}</code>
                       </div>
                     </div>
                   ))}
@@ -578,18 +628,94 @@ export default function Home() {
           font-size: 13px;
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 12px;
         }
         .folder-banner strong { color: #e94560; }
+        .folder-change {
+          background: rgba(233, 69, 96, 0.2);
+          border: 1px solid #e94560;
+          border-radius: 6px;
+          padding: 3px 10px;
+          font-size: 11px;
+          color: #e94560;
+          cursor: pointer;
+        }
+        .folder-change:hover { background: #e94560; color: #fff; }
         .folder-clear {
+          background: none;
+          border: 1px solid #555;
+          border-radius: 6px;
+          padding: 3px 10px;
+          font-size: 11px;
+          color: #888;
+          cursor: pointer;
+          margin-left: auto;
+        }
+        .folder-clear:hover { border-color: #e94560; color: #e94560; }
+        .folder-select-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.7);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 200;
+        }
+        .folder-select-modal {
+          background: #16213e;
+          border: 1px solid #e94560;
+          border-radius: 12px;
+          width: 90%;
+          max-width: 420px;
+          display: flex;
+          flex-direction: column;
+        }
+        .folder-select-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 16px 20px;
+          border-bottom: 1px solid #0f3460;
+        }
+        .folder-select-header h3 { margin: 0; font-size: 15px; color: #e94560; }
+        .folder-select-header button {
           background: none;
           border: none;
           color: #888;
+          font-size: 18px;
           cursor: pointer;
-          font-size: 12px;
-          margin-left: auto;
         }
-        .folder-clear:hover { color: #e94560; }
+        .folder-select-body {
+          padding: 16px 20px;
+        }
+        .folder-empty {
+          text-align: center;
+          color: #888;
+          padding: 10px;
+        }
+        .folder-grid {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .folder-option {
+          background: #1a1a2e;
+          border: 1px solid #0f3460;
+          border-radius: 8px;
+          padding: 12px 16px;
+          text-align: left;
+          font-size: 14px;
+          color: #e0e0e0;
+          cursor: pointer;
+        }
+        .folder-option:hover {
+          border-color: #e94560;
+          color: #e94560;
+        }
+        .folder-select-footer {
+          padding: 12px 20px;
+          border-top: 1px solid #0f3460;
+        }
         .messages {
           flex: 1;
           overflow-y: auto;
@@ -667,24 +793,6 @@ export default function Home() {
           background: #e94560;
           color: #fff;
         }
-        .folder-chips {
-          display: flex;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
-        .folder-chip {
-          background: #16213e;
-          border: 1px solid #0f3460;
-          border-radius: 12px;
-          padding: 4px 12px;
-          font-size: 11px;
-          color: #e0e0e0;
-          cursor: pointer;
-        }
-        .folder-chip:hover {
-          border-color: #e94560;
-          color: #e94560;
-        }
         .error-bar {
           padding: 8px 20px;
           background: rgba(231, 76, 60, 0.2);
@@ -757,20 +865,6 @@ export default function Home() {
         .integrate-modal {
           max-width: 650px;
         }
-        .folder-select-area {
-          padding: 12px 20px;
-          border-bottom: 1px solid #0f3460;
-        }
-        .folder-select-label {
-          margin: 0 0 8px;
-          font-size: 12px;
-          color: #888;
-        }
-        .folder-chips-modal {
-          display: flex;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
         .index-header {
           display: flex;
           justify-content: space-between;
@@ -794,6 +888,7 @@ export default function Home() {
           gap: 8px;
           padding: 12px 20px;
           border-bottom: 1px solid #0f3460;
+          flex-wrap: wrap;
         }
         .toolbar-btn {
           background: #0f3460;
@@ -805,6 +900,14 @@ export default function Home() {
           cursor: pointer;
         }
         .toolbar-btn:hover { background: #e94560; color: #fff; }
+        .upload-btn {
+          background: #27ae60;
+          border-color: #27ae60;
+          color: #fff;
+          display: inline-flex;
+          align-items: center;
+        }
+        .upload-btn:hover { background: #219a52; }
         .toolbar-btn.save { background: #e94560; color: #fff; border-color: #e94560; }
         .toolbar-btn.save:hover { background: #c73e54; }
         .toolbar-btn.save:disabled { background: #555; border-color: #555; cursor: not-allowed; }
@@ -888,7 +991,6 @@ export default function Home() {
           display: flex;
           flex-direction: column;
           gap: 6px;
-          margin-bottom: 10px;
         }
         .integrate-row {
           display: flex;
@@ -904,25 +1006,8 @@ export default function Home() {
           background: #0a0a1a;
           padding: 3px 8px;
           border-radius: 4px;
-          font-size: 11px;
-          color: #4ade80;
-          word-break: break-all;
-        }
-        .integrate-example {
-          background: #0a0a1a;
-          border-radius: 6px;
-          padding: 10px;
-        }
-        .integrate-example p {
-          margin: 0 0 6px;
-          font-size: 11px;
-          color: #888;
-        }
-        .integrate-example code {
-          display: block;
           font-size: 10px;
-          color: #e0e0e0;
-          white-space: pre-wrap;
+          color: #4ade80;
           word-break: break-all;
         }
         .editor-modal {
