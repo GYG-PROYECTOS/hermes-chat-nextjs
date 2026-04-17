@@ -36,24 +36,24 @@ function extractPreview(content: string, query: string, maxLen = 600): string {
   return preview.replace(/^#+\s+/gm, '').replace(/\*\*/g, '').replace(/\n+/g, ' ').trim();
 }
 
-function listFilesRecursive(dir = ''): Array<{ name: string; content: string }> {
+function listFiles(folder = ''): Array<{ name: string; content: string }> {
   const files: Array<{ name: string; content: string }> = [];
-  const fullDir = path.join(WIKI_PATH, dir);
+  const fullDir = path.join(WIKI_PATH, folder);
   if (!fs.existsSync(fullDir)) return files;
   const entries = fs.readdirSync(fullDir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'index.md') {
       const fullPath = path.join(fullDir, entry.name);
       const content = fs.readFileSync(fullPath, 'utf-8');
-      files.push({ name: path.join(dir, entry.name).replace('.md', ''), content });
+      files.push({ name: path.join(folder, entry.name).replace('.md', ''), content });
     } else if (entry.isDirectory() && !entry.name.startsWith('.')) {
-      files.push(...listFilesRecursive(path.join(dir, entry.name)));
+      files.push(...listFiles(path.join(folder, entry.name)));
     }
   }
   return files;
 }
 
-function search(query: string, files: ReturnType<typeof listFilesRecursive>) {
+function search(query: string, files: ReturnType<typeof listFiles>) {
   const nq = normalizeText(query);
   const words = nq.split(/\s+/).filter((w: string) => w.length > 2);
   return files.map(f => {
@@ -75,14 +75,39 @@ export async function POST(req: NextRequest) {
 
   if (!genAI) return NextResponse.json({ error: 'API Gemini no configurada' }, { status: 500 });
 
-  const { question } = await req.json();
+  const { question, folder } = await req.json();
   if (!question) return NextResponse.json({ error: 'question requerida' }, { status: 400 });
 
-  const allFiles = listFilesRecursive();
-  if (allFiles.length === 0) return NextResponse.json({ answer: 'Wiki vacía.', sources: [] });
+  const targetFolder = folder || '';
 
-  const results = search(question, allFiles);
-  if (results.length === 0) return NextResponse.json({ answer: `No encontré información sobre "${question}".`, sources: [] });
+  // Si hay folder, solo busca en esa carpeta (sin recursion)
+  const files: Array<{ name: string; content: string }> = [];
+  const fullDir = path.join(WIKI_PATH, targetFolder);
+  if (fs.existsSync(fullDir)) {
+    const entries = fs.readdirSync(fullDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'index.md') {
+        const fullPath = path.join(fullDir, entry.name);
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        files.push({ name: path.join(targetFolder, entry.name).replace('.md', ''), content });
+      }
+    }
+  }
+
+  if (files.length === 0) {
+    return NextResponse.json({
+      answer: folder ? `El cuaderno "${folder}" está vacío o no existe.` : 'Wiki vacía.',
+      sources: [],
+    });
+  }
+
+  const results = search(question, files);
+  if (results.length === 0) {
+    return NextResponse.json({
+      answer: `No encontré información sobre "${question}"${folder ? ` en ${folder}` : ''}.`,
+      sources: [],
+    });
+  }
 
   const top = results.slice(0, 3);
   const context = top.map(f => `=== ${f.name} ===\n${f.content}`).join('\n\n');
@@ -93,7 +118,6 @@ export async function POST(req: NextRequest) {
 Reglas:
 - Citá la fuente [archivo]
 - Respondé en español
-- Sé preciso
 
 CONTEXTO:
 ${context}

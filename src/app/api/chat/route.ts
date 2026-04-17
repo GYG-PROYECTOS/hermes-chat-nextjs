@@ -14,79 +14,51 @@ interface WikiFile {
   preview: string;
 }
 
-// Normalize text for accent-insensitive search
 function normalizeText(text: string): string {
-  return text
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
-// Extract a preview snippet from content
 function extractPreview(content: string, query: string, maxLen = 600): string {
   const normalized = normalizeText(content);
   const normalizedQuery = normalizeText(query);
   const queryWords = normalizedQuery.split(/\s+/).filter(w => w.length > 2);
-
-  // Find the best matching position
   let bestPos = 0;
   let bestScore = 0;
-
   for (const word of queryWords) {
     const pos = normalized.indexOf(word);
     if (pos !== -1) {
       const score = queryWords.filter(w => normalized.substring(Math.max(0, pos - 100), pos + 100).includes(w)).length;
-      if (score > bestScore) {
-        bestScore = score;
-        bestPos = Math.max(0, pos - 50);
-      }
+      if (score > bestScore) { bestScore = score; bestPos = Math.max(0, pos - 50); }
     }
   }
-
   let preview = content.substring(bestPos, bestPos + maxLen);
   if (bestPos > 0) preview = '...' + preview;
   if (bestPos + maxLen < content.length) preview = preview + '...';
-
-  // Clean markdown artifacts for preview
-  preview = preview
-    .replace(/^#+\s+/gm, '')
-    .replace(/\*\*/g, '')
-    .replace(/\n+/g, ' ')
-    .trim();
-
-  return preview;
+  return preview.replace(/^#+\s+/gm, '').replace(/\*\*/g, '').replace(/\n+/g, ' ').trim();
 }
 
-// List all .md files in wiki
-async function listWikiFiles(): Promise<WikiFile[]> {
+function listWikiFiles(folder = ''): WikiFile[] {
   const files: WikiFile[] = [];
+  const fullDir = path.join(WIKI_PATH, folder);
+  if (!fs.existsSync(fullDir)) return files;
 
-  try {
-    const entries = fs.readdirSync(WIKI_PATH, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'index.md') {
-        const filePath = path.join(WIKI_PATH, entry.name);
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const slug = entry.name.replace('.md', '');
-        const title = slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-        files.push({
-          name: entry.name,
-          slug,
-          content,
-          preview: extractPreview(content, '', 300),
-        });
-      }
+  const entries = fs.readdirSync(fullDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'index.md') {
+      const filePath = path.join(fullDir, entry.name);
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const slug = (folder ? folder + '/' : '') + entry.name.replace('.md', '');
+      files.push({
+        name: entry.name,
+        slug,
+        content,
+        preview: extractPreview(content, '', 300),
+      });
     }
-  } catch (err) {
-    console.error('Error reading wiki:', err);
   }
-
   return files;
 }
 
-// Search files by query
 function searchFiles(files: WikiFile[], query: string): WikiFile[] {
   const normalizedQuery = normalizeText(query);
   const queryWords = normalizedQuery.split(/\s+/).filter(w => w.length > 2);
@@ -94,46 +66,22 @@ function searchFiles(files: WikiFile[], query: string): WikiFile[] {
   const scored = files.map(file => {
     const normalizedContent = normalizeText(file.content);
     let score = 0;
-
     for (const word of queryWords) {
-      // Count occurrences
       const regex = new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
       const matches = (file.content.match(regex) || []).length;
       score += matches;
-
-      // Bonus if word is in title/slug
       if (normalizeText(file.slug).includes(word)) score += 5;
     }
-
     return { file, score };
   });
 
-  return scored
-    .filter(s => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .map(s => ({
-      ...s.file,
-      preview: extractPreview(s.file.content, query),
-    }));
-}
-
-// Build context from top files
-function buildContext(files: WikiFile[], maxTokens = 60000): string {
-  let context = '';
-  const genAI = require('@google/generative-ai');
-
-  for (const file of files) {
-    const estimatedTokens = file.content.length / 4;
-    if (context.length / 4 + estimatedTokens > maxTokens) break;
-    context += `\n\n## ${file.slug.replace(/-/g, ' ')}\n\n${file.content}`;
-  }
-
-  return context;
+  return scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score)
+    .map(s => ({ ...s.file, preview: extractPreview(s.file.content, query) }));
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { question } = await req.json();
+    const { question, folder } = await req.json();
 
     if (!question || typeof question !== 'string') {
       return NextResponse.json({ error: 'Pregunta requerida' }, { status: 400 });
@@ -144,42 +92,40 @@ export async function POST(req: NextRequest) {
     }
 
     const cleanQuestion = question.trim();
+    const targetFolder = folder || '';
 
-    // 1. List all wiki files
-    const allFiles = await listWikiFiles();
+    const allFiles = listWikiFiles(targetFolder);
 
     if (allFiles.length === 0) {
       return NextResponse.json({
-        answer: 'No hay documentos en la wiki. Cargá PDFs primero.',
+        answer: folder
+          ? `El cuaderno "${folder}" está vacío.`
+          : 'No hay documentos en la wiki. Cargá PDFs primero.',
         sources: [],
       });
     }
 
-    // 2. Search relevant files
     const results = searchFiles(allFiles, cleanQuestion);
 
     if (results.length === 0) {
       return NextResponse.json({
-        answer: `No encontré información sobre "<strong>${cleanQuestion}</strong>". Probá con otros términos.`,
+        answer: `No encontré información sobre "<strong>${cleanQuestion}</strong>"${folder ? ` en ${folder}` : ''}.`,
         sources: [],
       });
     }
 
-    // 3. Build context from top 3 files
     const topFiles = results.slice(0, 3);
     const context = topFiles.map(f => `=== ${f.slug} ===\n${f.content}`).join('\n\n');
 
-    // 4. Call Gemini Flash
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `Sos un asistente de investigación especializado en documentos legales bolivianos (UNEFCO).
 
-Respondé la pregunta del usuario usando ÚNICAMENTE la información proporcionada en el contexto. Si la respuesta no está en el contexto, decí claramente que no encontrás esa información.
+Respondé la pregunta del usuario usando ÚNICAMENTE la información del contexto. Si no está, decilo.
 
 Reglas:
-- Citá la fuente usando [archivo]
+- Citá la fuente [archivo]
 - Sé preciso con artículos y numeración
 - Respondé en español
-- Si la info es ambigua, mencioná la incertidumbre
 
 CONTEXTO:
 ${context}
@@ -191,21 +137,12 @@ RESPUESTA:`;
     const geminiRes = await model.generateContent(prompt);
     const answer = geminiRes.response.text();
 
-    // 5. Format response
-    const formattedAnswer = answer
-      .replace(/^/gm, '')
-      .replace(/\n/g, '<br>')
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
     const sources = topFiles.map(f => ({
-      title: f.slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+      title: f.slug.replace(/\//g, ' / ').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
       slug: f.slug,
     }));
 
-    return NextResponse.json({
-      answer: formattedAnswer,
-      sources,
-    });
+    return NextResponse.json({ answer, sources });
 
   } catch (err: any) {
     console.error('[/api/chat]', err);

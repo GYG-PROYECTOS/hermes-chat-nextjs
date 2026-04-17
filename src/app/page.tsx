@@ -30,6 +30,8 @@ interface MoveState {
   dragOver: string | null;
 }
 
+const API_BASE = '';
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -51,6 +53,9 @@ export default function Home() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [move, setMove] = useState<MoveState>({ dragging: null, dragOver: null });
   const [currentPath, setCurrentPath] = useState('');
+  const [selectedFolder, setSelectedFolder] = useState('');
+  const [showIntegrate, setShowIntegrate] = useState(false);
+  const [folderList, setFolderList] = useState<WikiItem[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -60,6 +65,19 @@ export default function Home() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    loadFolders();
+  }, []);
+
+  const loadFolders = async () => {
+    try {
+      const res = await fetch('/api/index');
+      const data = await res.json();
+      const folders = (data.items || []).filter((i: WikiItem) => i.type === 'folder');
+      setFolderList(folders);
+    } catch {}
+  };
 
   const sendMessage = async (text?: string) => {
     const textToSend = text || input.trim();
@@ -77,10 +95,13 @@ export default function Home() {
     setError('');
 
     try {
+      const body: any = { question: textToSend };
+      if (selectedFolder) body.folder = selectedFolder;
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: textToSend }),
+        body: JSON.stringify(body),
       });
 
       const data = await res.json();
@@ -126,6 +147,25 @@ export default function Home() {
     }
   };
 
+  const selectFolder = (folder: WikiItem) => {
+    setSelectedFolder(folder.slug);
+    setShowIndex(false);
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'bot',
+      content: `📂 <strong>Cuaderno seleccionado:</strong> ${folder.title}<br>Todas las preguntas ahora usan solo este cuaderno.`,
+    }]);
+  };
+
+  const clearFolder = () => {
+    setSelectedFolder('');
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'bot',
+      content: `🌐 <strong>Modo global:</strong> Buscando en todos los documentos.`,
+    }]);
+  };
+
   const openCreateFile = (inFolder = '') => {
     const folderPrefix = inFolder ? inFolder + '/' : '';
     setEditor({ open: true, mode: 'create', type: 'file', path: folderPrefix, content: '# ', originalName: '' });
@@ -158,12 +198,13 @@ export default function Home() {
       } else {
         await fetch(`/api/wiki/file?path=${editor.path}`, {
           method: 'PUT',
-          headers: { "Content-Type": "application/json" },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: editor.content }),
         });
       }
       setEditor({ ...editor, open: false });
       loadIndex(currentPath);
+      loadFolders();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -182,6 +223,7 @@ export default function Home() {
       }
       setDeleteConfirm(null);
       loadIndex(currentPath);
+      loadFolders();
     } catch (err: any) {
       setError(err.message);
     }
@@ -209,12 +251,12 @@ export default function Home() {
       return;
     }
     try {
-      const res = await fetch(`/api/wiki/file?path=${fileName}`, { method: 'GET' });
+      const res = await fetch(`/api/wiki/file?path=${fileName}`);
       const data = await res.json();
       const destPath = targetFolder + '/' + fileName.split('/').pop();
       await fetch(`/api/wiki/file?path=${destPath}`, {
         method: 'PUT',
-        headers: { "Content-Type": "application/json" },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: data.content }),
       });
       await fetch(`/api/wiki/file?path=${fileName}`, { method: 'DELETE' });
@@ -238,17 +280,12 @@ export default function Home() {
     loadIndex(parent);
   };
 
-  const getFileName = (item: WikiItem) => {
-    if (item.type === 'folder') return item.name;
-    return item.name.replace('.md', '');
-  };
-
   const isFolder = (item: WikiItem) => item.type === 'folder';
 
   const suggestions = [
     { label: '¿Qué documentos hay?', q: '¿Qué documentos hay disponibles?' },
     { label: 'Resumen', q: 'Dame un resumen del documento' },
-    { label: '📂 Gestionar wiki', action: 'manage' },
+    { label: '📂 Seleccionar cuaderno', action: 'manage' },
   ];
 
   return (
@@ -256,11 +293,18 @@ export default function Home() {
       <header className="chat-header">
         <h1>🤖 Hermes Wiki Chat</h1>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <button className="header-btn" onClick={() => { setShowIndex(true); setIndexLoading(true); fetch('/api/index').then(r=>r.json()).then(d=>{setWikiItems(d.items||[]);setIndexLoading(false);setCurrentPath('');}) }} title="Ver índice">📚</button>
-          <button className="header-btn" onClick={() => loadIndex()} title="Gestionar wiki">⚙️</button>
+          <button className="header-btn" onClick={() => loadIndex()} title="Índice">📚</button>
+          <button className="header-btn" onClick={() => { setShowIntegrate(true); loadFolders(); }} title="Integración">🔗</button>
           <span className="status">● Conectado</span>
         </div>
       </header>
+
+      {selectedFolder && (
+        <div className="folder-banner">
+          📂 Cuaderno activo: <strong>{selectedFolder}</strong>
+          <button className="folder-clear" onClick={clearFolder}>✕</button>
+        </div>
+      )}
 
       <div className="messages">
         {messages.map((msg) => (
@@ -291,11 +335,20 @@ export default function Home() {
             <button
               key={i}
               className="suggestion-btn"
-              onClick={() => s.action === 'manage' ? loadIndex() : sendMessage(s.q)}
+              onClick={() => s.action === 'manage' ? (loadIndex(), setShowIndex(true)) : sendMessage(s.q)}
             >
               {s.label}
             </button>
           ))}
+          {folderList.length > 0 && (
+            <div className="folder-chips">
+              {folderList.map(f => (
+                <button key={f.name} className="folder-chip" onClick={() => selectFolder(f)}>
+                  📁 {f.title}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -306,6 +359,18 @@ export default function Home() {
               <h2>📂 {currentPath ? currentPath : 'Raíz'}</h2>
               <button className="index-close" onClick={() => setShowIndex(false)}>✕</button>
             </div>
+            {folderList.length > 0 && !currentPath && (
+              <div className="folder-select-area">
+                <p className="folder-select-label">📂 Seleccionar cuaderno para chatear:</p>
+                <div className="folder-chips-modal">
+                  {folderList.map(f => (
+                    <button key={f.name} className="folder-chip" onClick={() => selectFolder(f)}>
+                      📁 {f.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="index-toolbar">
               {currentPath && <button className="toolbar-btn" onClick={goUp}>⬆️ Volver</button>}
               <button className="toolbar-btn" onClick={() => openCreateFile(currentPath)}>+ Archivo</button>
@@ -334,9 +399,6 @@ export default function Home() {
                       <span className="index-title" onClick={() => !isFolder(item) && openEditFile(item)} style={{ cursor: isFolder(item) ? 'default' : 'pointer' }}>
                         {item.title}
                       </span>
-                      {move.dragging && !isFolder(item) && move.dragging !== item.name && (
-                        <span className="move-hint">Arrastrá a 📁</span>
-                      )}
                       <button className="item-delete" onClick={() => setDeleteConfirm(item.name)} title="Eliminar">🗑️</button>
                     </li>
                   ))}
@@ -345,6 +407,50 @@ export default function Home() {
             </div>
             <div className="index-footer">
               <small style={{ color: '#666' }}>📁 Arrastrá archivos a carpetas para moverlos</small>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showIntegrate && (
+        <div className="index-overlay" onClick={() => setShowIntegrate(false)}>
+          <div className="index-modal integrate-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="index-header">
+              <h2>🔗 Integración por Cuaderno</h2>
+              <button className="index-close" onClick={() => setShowIntegrate(false)}>✕</button>
+            </div>
+            <div className="index-body">
+              {folderList.length === 0 ? (
+                <div className="index-empty">No hay cuadernos creados.</div>
+              ) : (
+                <div className="integrate-list">
+                  {folderList.map(folder => (
+                    <div key={folder.name} className="integrate-item">
+                      <h3>📁 {folder.title}</h3>
+                      <div className="integrate-endpoints">
+                        <div className="integrate-row">
+                          <span className="integrate-label">Índice:</span>
+                          <code>{`${API_BASE}/api/public/index?path=${folder.slug}`}</code>
+                        </div>
+                        <div className="integrate-row">
+                          <span className="integrate-label">Preguntar:</span>
+                          <code>{`POST ${API_BASE}/api/public/ask`}</code>
+                        </div>
+                        <div className="integrate-row">
+                          <span className="integrate-label">Archivo:</span>
+                          <code>{`${API_BASE}/api/public/file?path=${folder.slug}/archivo.md`}</code>
+                        </div>
+                      </div>
+                      <div className="integrate-example">
+                        <p>Ejemplo curl:</p>
+                        <code>{`curl -X POST ${API_BASE}/api/public/ask \\
+  -H "Content-Type: application/json" \\
+  -d '{"question":"tu pregunta","folder":"${folder.slug}"}'`}</code>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -420,7 +526,7 @@ export default function Home() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-          placeholder="Escribí tu pregunta..."
+          placeholder={selectedFolder ? `Preguntá sobre ${selectedFolder}...` : 'Escribí tu pregunta...'}
           disabled={loading}
         />
         <button onClick={() => sendMessage()} disabled={loading || !input.trim()}>
@@ -466,6 +572,24 @@ export default function Home() {
           color: #4ade80;
           margin-left: 8px;
         }
+        .folder-banner {
+          background: #0f3460;
+          padding: 8px 20px;
+          font-size: 13px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .folder-banner strong { color: #e94560; }
+        .folder-clear {
+          background: none;
+          border: none;
+          color: #888;
+          cursor: pointer;
+          font-size: 12px;
+          margin-left: auto;
+        }
+        .folder-clear:hover { color: #e94560; }
         .messages {
           flex: 1;
           overflow-y: auto;
@@ -527,6 +651,7 @@ export default function Home() {
           gap: 8px;
           padding: 0 20px 12px;
           flex-wrap: wrap;
+          align-items: center;
         }
         .suggestion-btn {
           background: #0f3460;
@@ -541,6 +666,24 @@ export default function Home() {
         .suggestion-btn:hover {
           background: #e94560;
           color: #fff;
+        }
+        .folder-chips {
+          display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+        .folder-chip {
+          background: #16213e;
+          border: 1px solid #0f3460;
+          border-radius: 12px;
+          padding: 4px 12px;
+          font-size: 11px;
+          color: #e0e0e0;
+          cursor: pointer;
+        }
+        .folder-chip:hover {
+          border-color: #e94560;
+          color: #e94560;
         }
         .error-bar {
           padding: 8px 20px;
@@ -610,6 +753,23 @@ export default function Home() {
           max-height: 80vh;
           display: flex;
           flex-direction: column;
+        }
+        .integrate-modal {
+          max-width: 650px;
+        }
+        .folder-select-area {
+          padding: 12px 20px;
+          border-bottom: 1px solid #0f3460;
+        }
+        .folder-select-label {
+          margin: 0 0 8px;
+          font-size: 12px;
+          color: #888;
+        }
+        .folder-chips-modal {
+          display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
         }
         .index-header {
           display: flex;
@@ -687,7 +847,6 @@ export default function Home() {
         .index-item.dragging {
           opacity: 0.5;
         }
-        .index-item:not(.dragging) { cursor: grab; }
         .index-icon { font-size: 16px; }
         .index-title {
           flex: 1;
@@ -695,13 +854,6 @@ export default function Home() {
           color: #e0e0e0;
         }
         .index-title:hover { color: #e94560; }
-        .move-hint {
-          font-size: 10px;
-          color: #e94560;
-          opacity: 0;
-          transition: opacity 0.15s;
-        }
-        .index-item:hover .move-hint { opacity: 1; }
         .item-delete {
           background: none;
           border: none;
@@ -715,6 +867,63 @@ export default function Home() {
           padding: 10px 20px;
           border-top: 1px solid #0f3460;
           text-align: center;
+        }
+        .integrate-list {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .integrate-item {
+          background: #1a1a2e;
+          border: 1px solid #0f3460;
+          border-radius: 8px;
+          padding: 14px;
+        }
+        .integrate-item h3 {
+          margin: 0 0 10px;
+          font-size: 14px;
+          color: #e94560;
+        }
+        .integrate-endpoints {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-bottom: 10px;
+        }
+        .integrate-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 12px;
+        }
+        .integrate-label {
+          color: #888;
+          min-width: 70px;
+        }
+        .integrate-row code {
+          background: #0a0a1a;
+          padding: 3px 8px;
+          border-radius: 4px;
+          font-size: 11px;
+          color: #4ade80;
+          word-break: break-all;
+        }
+        .integrate-example {
+          background: #0a0a1a;
+          border-radius: 6px;
+          padding: 10px;
+        }
+        .integrate-example p {
+          margin: 0 0 6px;
+          font-size: 11px;
+          color: #888;
+        }
+        .integrate-example code {
+          display: block;
+          font-size: 10px;
+          color: #e0e0e0;
+          white-space: pre-wrap;
+          word-break: break-all;
         }
         .editor-modal {
           background: #16213e;
