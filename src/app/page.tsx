@@ -9,6 +9,13 @@ interface Message {
   sources?: { title: string; slug: string }[];
 }
 
+interface WikiPage {
+  slug: string;
+  title: string;
+  file: string;
+  folder: string;
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -20,6 +27,9 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showIndex, setShowIndex] = useState(false);
+  const [indexPages, setIndexPages] = useState<WikiPage[]>([]);
+  const [indexLoading, setIndexLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -79,10 +89,25 @@ export default function Home() {
     }
   };
 
+  const loadIndex = async () => {
+    setShowIndex(true);
+    setIndexLoading(true);
+    try {
+      const res = await fetch('/api/index');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setIndexPages(data.pages || []);
+    } catch (err: any) {
+      setIndexPages([]);
+    } finally {
+      setIndexLoading(false);
+    }
+  };
+
   const suggestions = [
     { label: '¿Qué documentos hay?', q: '¿Qué documentos hay disponibles?' },
     { label: 'Resumen', q: 'Dame un resumen del documento' },
-    { label: 'Ver índice', q: 'Muéstrame el índice' },
+    { label: 'Ver índice', action: 'index' },
   ];
 
   return (
@@ -120,10 +145,44 @@ export default function Home() {
       {messages.length === 1 && (
         <div className="suggestions">
           {suggestions.map((s, i) => (
-            <button key={i} className="suggestion-btn" onClick={() => sendMessage(s.q)}>
+            <button
+              key={i}
+              className="suggestion-btn"
+              onClick={() => s.action === 'index' ? loadIndex() : sendMessage(s.q)}
+            >
               {s.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {showIndex && (
+        <div className="index-overlay" onClick={() => setShowIndex(false)}>
+          <div className="index-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="index-header">
+              <h2>📚 Índice de Documentos</h2>
+              <button className="index-close" onClick={() => setShowIndex(false)}>✕</button>
+            </div>
+            <div className="index-body">
+              {indexLoading ? (
+                <div className="index-loading">Cargando...</div>
+              ) : indexPages.length === 0 ? (
+                <div className="index-empty">No hay documentos</div>
+              ) : (
+                <ul className="index-list">
+                  {indexPages.map((page) => (
+                    <li key={page.slug} className="index-item">
+                      <span className="index-icon">📄</span>
+                      <span className="index-title">{page.title}</span>
+                      {page.folder && page.folder !== 'root' && (
+                        <span className="index-folder">📁 {page.folder}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -329,6 +388,109 @@ export default function Home() {
         .typing {
           color: #e94560;
           font-style: italic;
+        }
+
+        .index-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.7);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 100;
+        }
+
+        .index-modal {
+          background: #16213e;
+          border: 1px solid #0f3460;
+          border-radius: 12px;
+          width: 90%;
+          max-width: 500px;
+          max-height: 80vh;
+          display: flex;
+          flex-direction: column;
+        }
+
+        .index-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 16px 20px;
+          border-bottom: 1px solid #0f3460;
+        }
+
+        .index-header h2 {
+          font-size: 16px;
+          color: #e94560;
+          margin: 0;
+        }
+
+        .index-close {
+          background: none;
+          border: none;
+          color: #888;
+          font-size: 18px;
+          cursor: pointer;
+          padding: 4px 8px;
+          border-radius: 4px;
+        }
+
+        .index-close:hover {
+          background: #0f3460;
+          color: #fff;
+        }
+
+        .index-body {
+          padding: 16px 20px;
+          overflow-y: auto;
+          flex: 1;
+        }
+
+        .index-loading,
+        .index-empty {
+          text-align: center;
+          color: #888;
+          padding: 20px;
+        }
+
+        .index-list {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .index-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 14px;
+          background: #1a1a2e;
+          border-radius: 8px;
+          border: 1px solid #0f3460;
+        }
+
+        .index-icon {
+          font-size: 16px;
+        }
+
+        .index-title {
+          flex: 1;
+          font-size: 13px;
+          color: #e0e0e0;
+        }
+
+        .index-folder {
+          font-size: 11px;
+          color: #888;
+          background: #0f3460;
+          padding: 2px 8px;
+          border-radius: 10px;
         }
       `}</style>
     </main>
