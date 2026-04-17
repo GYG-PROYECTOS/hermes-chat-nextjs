@@ -1,16 +1,28 @@
 import { NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
 
-const API_BASE = process.env.HERMES_API_URL || 'http://85.31.230.163:3000';
+const WIKI_PATH = process.env.WIKI_PATH || '/var/hermes-data/wiki';
 
 export async function GET() {
   try {
-    const res = await fetch(`${API_BASE}/wiki/index`, { cache: 'no-store' });
-    if (!res.ok) {
-      return NextResponse.json({ error: 'No se pudo obtener el índice' }, { status: res.status });
-    }
-    const data = await res.json();
-    return NextResponse.json(data);
+    const entries = fs.readdirSync(WIKI_PATH, { withFileTypes: true });
+    const files = entries
+      .filter(e => e.isFile() && e.name.endsWith('.md'))
+      .map(e => ({
+        name: e.name,
+        slug: e.name.replace('.md', ''),
+        title: e.name.replace('.md', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+      }))
+      .filter(f => f.slug !== 'index')
+      .sort((a, b) => a.title.localeCompare(b.title));
+
+    return NextResponse.json({
+      total: files.length,
+      files,
+    });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error('[/api/index]', err);
+    return NextResponse.json({ error: err.message, total: 0, files: [] }, { status: 500 });
   }
 }
