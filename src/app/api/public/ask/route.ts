@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
 import path from 'path';
 
 const WIKI_PATH = process.env.WIKI_PATH || '/var/hermes-data/wiki';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 function checkToken(token: string | null): boolean {
   const publicToken = process.env.PUBLIC_TOKEN;
@@ -73,14 +70,11 @@ export async function POST(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token');
   if (!checkToken(token)) return NextResponse.json({ error: 'Token inválido' }, { status: 401 });
 
-  if (!genAI) return NextResponse.json({ error: 'API Gemini no configurada' }, { status: 500 });
-
   const { question, folder } = await req.json();
   if (!question) return NextResponse.json({ error: 'question requerida' }, { status: 400 });
 
   const targetFolder = folder || '';
 
-  // Si hay folder, solo busca en esa carpeta (sin recursion)
   const files: Array<{ name: string; content: string }> = [];
   const fullDir = path.join(WIKI_PATH, targetFolder);
   if (fs.existsSync(fullDir)) {
@@ -109,25 +103,15 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Sin Gemini - devolver resultados de búsqueda como respuesta directa
   const top = results.slice(0, 3);
-  const context = top.map(f => `=== ${f.name} ===\n${f.content}`).join('\n\n');
+  const answerParts = top.map(f => {
+    const title = f.name.replace(/\//g, ' / ').replace(/-/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+    const preview = extractPreview(f.content, question);
+    return `📄 ${title}\n\n${preview}`;
+  });
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-  const prompt = `Sos un asistente de investigación. Respondé usando ÚNICAMENTE la información del contexto. Si no está, decilo.
-
-Reglas:
-- Citá la fuente [archivo]
-- Respondé en español
-
-CONTEXTO:
-${context}
-
-PREGUNTA: ${question}
-
-RESPUESTA:`;
-
-  const geminiRes = await model.generateContent(prompt);
-  const answer = geminiRes.response.text();
+  const answer = `Encontré ${results.length} resultado(s) para "${question}":\n\n${answerParts.join('\n\n---\n\n')}`;
 
   return NextResponse.json({
     answer,

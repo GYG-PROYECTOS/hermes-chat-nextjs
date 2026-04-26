@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
 import path from 'path';
 
 const WIKI_PATH = process.env.WIKI_PATH || '/var/hermes-data/wiki';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 interface WikiFile {
   name: string;
@@ -87,10 +84,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Pregunta requerida' }, { status: 400 });
     }
 
-    if (!genAI) {
-      return NextResponse.json({ error: 'GEMINI_API_KEY no configurada' }, { status: 500 });
-    }
-
     const cleanQuestion = question.trim();
     const targetFolder = folder || '';
 
@@ -114,28 +107,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Sin Gemini - devolver resultados de búsqueda como respuesta directa
     const topFiles = results.slice(0, 3);
-    const context = topFiles.map(f => `=== ${f.slug} ===\n${f.content}`).join('\n\n');
+    const answerParts = topFiles.map(f => {
+      const title = f.slug.replace(/\//g, ' / ').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      return `📄 ${title}\n\n${f.preview}`;
+    });
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const prompt = `Sos un asistente de investigación especializado en documentos legales bolivianos (UNEFCO).
-
-Respondé la pregunta del usuario usando ÚNICAMENTE la información del contexto. Si no está, decilo.
-
-Reglas:
-- Citá la fuente [archivo]
-- Sé preciso con artículos y numeración
-- Respondé en español
-
-CONTEXTO:
-${context}
-
-PREGUNTA: ${cleanQuestion}
-
-RESPUESTA:`;
-
-    const geminiRes = await model.generateContent(prompt);
-    const answer = geminiRes.response.text();
+    const answer = `Encontré ${results.length} resultado(s) para "<strong>${cleanQuestion}</strong>":\n\n${answerParts.join('\n\n---\n\n')}`;
 
     const sources = topFiles.map(f => ({
       title: f.slug.replace(/\//g, ' / ').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
